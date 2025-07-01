@@ -11,6 +11,9 @@ RUN pip install --no-cache-dir -r requirements.txt
 # Copy app code
 COPY app.py ./
 
+# Copy logo
+COPY logo_kontiki.png ./
+
 # Expose port
 EXPOSE 5000
 
