@@ -1,3 +1,4 @@
 Flask
 python-docx
 beautifulsoup4
+gunicorn
