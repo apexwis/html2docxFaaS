@@ -29,7 +29,7 @@ def html_to_standardized_docx(html_content):
     header = section.header
     paragraph = header.paragraphs[0]
     run = paragraph.add_run()
-    run.add_picture(logo_path, width=Inches(1.0))  # Adjust width as needed
+    run.add_picture(logo_path, width=Inches(0.7))  # Adjust width as needed
 
     body = soup.body
 
