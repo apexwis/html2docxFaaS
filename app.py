@@ -4,7 +4,9 @@ from docx import Document
 from bs4 import BeautifulSoup
 import tempfile
 import traceback
-from docx.shared import Inches
+from docx.shared import Inches, Pt
+from docx.enum.text import WD_ALIGN_PARAGRAPH
+from docx.oxml.ns import qn
 
 app = Flask(__name__)
 
@@ -28,6 +30,7 @@ def html_to_standardized_docx(html_content):
     section = doc.sections[0]
     header = section.header
     paragraph = header.paragraphs[0]
+    paragraph.alignment = WD_ALIGN_PARAGRAPH.RIGHT  # Align to right
     run = paragraph.add_run()
     run.add_picture(logo_path, width=Inches(0.7))  # Adjust width as needed
 
@@ -38,9 +41,18 @@ def html_to_standardized_docx(html_content):
             continue  # Skip text nodes or whitespace
         if elem.name in ['h1', 'h2', 'h3']:
             level = {'h1': 0, 'h2': 1, 'h3': 2}[elem.name]
-            doc.add_heading(elem.get_text(), level=level)
+            heading = doc.add_heading(elem.get_text(), level=level)
+            # Set heading font to Arial
+            for run in heading.runs:
+                run.font.name = 'Arial'
+                run._element.rPr.rFonts.set(qn('w:eastAsia'), 'Arial')
         elif elem.name == 'p':
-            doc.add_paragraph(elem.get_text())
+            para = doc.add_paragraph(elem.get_text())
+            # Set body text font to Arial 11
+            for run in para.runs:
+                run.font.name = 'Arial'
+                run.font.size = Pt(11)
+                run._element.rPr.rFonts.set(qn('w:eastAsia'), 'Arial')
         elif elem.name == 'table':
             rows = elem.find_all('tr')
             if not rows:
@@ -51,7 +63,14 @@ def html_to_standardized_docx(html_content):
             for i, row in enumerate(rows):
                 cells = row.find_all(['td', 'th'])
                 for j, cell in enumerate(cells):
-                    table_docx.cell(i, j).text = cell.get_text()
+                    cell_obj = table_docx.cell(i, j)
+                    cell_obj.text = cell.get_text()
+                    # Set table cell font to Arial 11
+                    for paragraph in cell_obj.paragraphs:
+                        for run in paragraph.runs:
+                            run.font.name = 'Arial'
+                            run.font.size = Pt(11)
+                            run._element.rPr.rFonts.set(qn('w:eastAsia'), 'Arial')
     return _save_docx_to_tempfile(doc)
 
 def _save_docx_to_tempfile(doc):
