@@ -4,6 +4,12 @@ FROM python:3.11-slim
 # Set work directory
 WORKDIR /app
 
+# Install system dependencies for ReportLab
+RUN apt-get update && apt-get install -y \
+    build-essential \
+    python3-dev \
+    && rm -rf /var/lib/apt/lists/*
+
 # Install dependencies
 COPY requirements.txt ./
 RUN pip install --no-cache-dir -r requirements.txt
@@ -11,8 +17,10 @@ RUN pip install --no-cache-dir -r requirements.txt
 # Copy app code
 COPY app.py ./
 
-# Copy logo
+# Copy images
 COPY logo_kontiki.png ./
+COPY Header.png ./
+COPY Footer.png ./
 
 # Expose port
 EXPOSE 5000
