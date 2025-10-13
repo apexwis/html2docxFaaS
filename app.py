@@ -15,11 +15,88 @@ from reportlab.lib.enums import TA_CENTER, TA_LEFT
 from reportlab.pdfgen import canvas
 from reportlab.lib.pagesizes import A4
 import tempfile
+import re
+from hyphen import Hyphenator
 
 app = Flask(__name__)
 
 # API Key for authentication
 API_KEY = os.getenv('API_KEY', 'de6e0b65-8bd6-43db-844b-b49e0f76d412')
+
+# Initialize German hyphenator for intelligent word breaking
+try:
+    de_hyphenator = Hyphenator('de_DE')
+except:
+    # Fallback if German dictionary is not available
+    de_hyphenator = None
+
+def add_hyphenation(text, language='de_DE', min_word_length=12):
+    """
+    Add intelligent hyphenation to text using PyHyphen.
+    
+    Args:
+        text: Input text to hyphenate
+        language: Language code (default: 'de_DE')
+        min_word_length: Minimum word length to hyphenate (default: 12)
+    
+    Returns:
+        Text with soft hyphens inserted at appropriate positions
+    """
+    try:
+        if not text or not de_hyphenator:
+            return text
+        
+        # Split text into words while preserving spaces and punctuation
+        words = re.findall(r'\S+|\s+', text)
+        result_words = []
+        
+        for word in words:
+            if re.match(r'^\S+$', word) and len(word) >= min_word_length:
+                # This is a word (not whitespace/punctuation) that's long enough
+                
+                # Skip hyphenation for certain patterns
+                if (re.match(r'^[A-Za-z]+[A-Z][a-z]+', word) or  # Mixed case like "apexConsulting"
+                    re.match(r'^[A-Z]{2,}', word) or  # All caps abbreviations
+                    word.count('-') > 0 or  # Already hyphenated words - SKIP COMPLETELY
+                    re.match(r'^\d+', word)):  # Numbers
+                    result_words.append(word)
+                    continue
+                
+                try:
+                    # Get hyphenation points from PyHyphen
+                    syllables = de_hyphenator.syllables(word)
+                    if syllables and len(syllables) > 1:
+                        # Only add soft hyphens between syllables, not after every syllable
+                        # Join syllables with soft hyphens, but be more conservative
+                        if len(syllables) <= 3:
+                            # For 2-3 syllables, join all with soft hyphens
+                            result_words.append('\u00AD'.join(syllables))
+                        else:
+                            # For 4+ syllables, be more conservative - only add soft hyphens every 2nd syllable
+                            conservative_syllables = []
+                            for i, syllable in enumerate(syllables):
+                                conservative_syllables.append(syllable)
+                                # Add soft hyphen after every 2nd syllable (except the last)
+                                if i < len(syllables) - 1 and (i + 1) % 2 == 0:
+                                    conservative_syllables.append('\u00AD')
+                            result_words.append(''.join(conservative_syllables))
+                    else:
+                        result_words.append(word)
+                except:
+                    # Fallback: add soft hyphen every 8-10 characters for very long words
+                    if len(word) > 15:
+                        # Add soft hyphen every 8-10 characters
+                        hyphenated = re.sub(r'(\w{8,10})', r'\1\u00AD', word)
+                        result_words.append(hyphenated)
+                    else:
+                        result_words.append(word)
+            else:
+                result_words.append(word)
+        
+        return ''.join(result_words)
+    except Exception as e:
+        print(f"Error in add_hyphenation: {e}")
+        return text  # Return original text if hyphenation fails
 
 def require_api_key(f):
     def decorated_function(*args, **kwargs):
@@ -156,27 +233,27 @@ def _add_enhanced_table_to_docx(doc, table_elem):
     tblW.set(qn('w:type'), 'dxa')  # Fixed width, not percentage
     tblPr.append(tblW)
     
-    # Set table cell margins for proper padding (like text)
+    # Set table cell margins for proper padding and auto-height
     tblCellMar = OxmlElement('w:tblCellMar')
     # Left and right margins for padding inside cells
     left_mar = OxmlElement('w:left')
-    left_mar.set(qn('w:w'), '100')  # ~0.07" padding
+    left_mar.set(qn('w:w'), '120')  # Slightly more padding
     left_mar.set(qn('w:type'), 'dxa')
     tblCellMar.append(left_mar)
     
     right_mar = OxmlElement('w:right')
-    right_mar.set(qn('w:w'), '100')  # ~0.07" padding
+    right_mar.set(qn('w:w'), '120')  # Slightly more padding
     right_mar.set(qn('w:type'), 'dxa')
     tblCellMar.append(right_mar)
     
-    # Top and bottom minimal
+    # Top and bottom padding for better text spacing
     top_mar = OxmlElement('w:top')
-    top_mar.set(qn('w:w'), '30')
+    top_mar.set(qn('w:w'), '60')  # More top padding
     top_mar.set(qn('w:type'), 'dxa')
     tblCellMar.append(top_mar)
     
     bottom_mar = OxmlElement('w:bottom')
-    bottom_mar.set(qn('w:w'), '30')
+    bottom_mar.set(qn('w:w'), '60')  # More bottom padding
     bottom_mar.set(qn('w:type'), 'dxa')
     tblCellMar.append(bottom_mar)
     
@@ -187,7 +264,11 @@ def _add_enhanced_table_to_docx(doc, table_elem):
     content_width = 7.0
     
     # Auto-detect optimal column widths based on content
-    if max_cols == 4:
+    if max_cols == 5:
+        # 5 columns: "Lösung, Beschreibung, Umsetzbarkeit, Angebot, Priorität"
+        # First column wider for bold text wrapping
+        col_widths = [1.4, 2.3, 1.8, 1.0, 0.5]
+    elif max_cols == 4:
         # 4 columns: First 3 narrow (labels), last wide (content)
         col_widths = [1.0, 1.0, 1.0, 4.0]
     elif max_cols == 3:
@@ -219,7 +300,8 @@ def _add_enhanced_table_to_docx(doc, table_elem):
                 col_idx += 1
             
             cell_obj = table_docx.cell(i, col_idx)
-            cell_obj.text = _extract_cell_text(cell)
+            # Pass is_first_column flag for better text wrapping
+            cell_obj.text = _extract_cell_text(cell, is_first_column=(col_idx == 0))
             
             # Handle colspan
             colspan = int(cell.get('colspan', 1))
@@ -261,11 +343,11 @@ def _add_enhanced_table_to_docx(doc, table_elem):
                 shading_elm.set(qn('w:fill'), 'F8FAFD')  # Light blue
                 cell_obj._tc.get_or_add_tcPr().append(shading_elm)
             
-            # Enhanced text styling - ultra refined
+            # Enhanced text styling with proper line breaks
             for paragraph in cell_obj.paragraphs:
                 for run in paragraph.runs:
                     run.font.name = 'Arial'
-                    run.font.size = Pt(8)  # Ultra small, natural size for all
+                    run.font.size = Pt(9)  # Slightly larger for better readability
                     run.font.bold = is_header_row or is_first_col
                     run._element.rPr.rFonts.set(qn('w:eastAsia'), 'Arial')
                     
@@ -273,14 +355,31 @@ def _add_enhanced_table_to_docx(doc, table_elem):
                     if is_header_row:
                         run.font.color.rgb = RGBColor(255, 255, 255)  # White text for header row
                 
-                # Paragraph alignment and spacing - ultra natural, NO indents for flush alignment
+                # Paragraph alignment and spacing with proper line breaks
                 paragraph.paragraph_format.alignment = WD_ALIGN_PARAGRAPH.CENTER if is_header_row else WD_ALIGN_PARAGRAPH.LEFT
-                paragraph.paragraph_format.space_before = Pt(2)  # Ultra thin spacing
-                paragraph.paragraph_format.space_after = Pt(2)   # Ultra thin spacing
+                paragraph.paragraph_format.space_before = Pt(3)  # Better spacing
+                paragraph.paragraph_format.space_after = Pt(3)   # Better spacing
                 paragraph.paragraph_format.left_indent = Inches(0)  # NO indent - flush with table edge
                 paragraph.paragraph_format.right_indent = Inches(0) # NO indent - flush with table edge
+                
+                # Enable text wrapping and line breaks - especially important for bold text
+                paragraph.paragraph_format.widow_control = True
+                paragraph.paragraph_format.keep_together = False
+                paragraph.paragraph_format.keep_with_next = False
+                
+                # Additional properties for better text wrapping, especially for bold text
+                paragraph.paragraph_format.line_spacing = 1.0  # Single line spacing
+                paragraph.paragraph_format.space_before = Pt(2)  # Reduced spacing for better wrapping
+                paragraph.paragraph_format.space_after = Pt(2)   # Reduced spacing for better wrapping
+                
+                # FORCE text wrapping for first column (bold text)
+                if is_first_col:
+                    paragraph.paragraph_format.widow_control = False  # Allow breaking
+                    paragraph.paragraph_format.keep_together = False  # Allow breaking
+                    paragraph.paragraph_format.keep_with_next = False  # Allow breaking
+                    paragraph.paragraph_format.orphan_control = False  # Allow breaking
             
-            # Set cell borders - black borders like HTML example
+            # Set cell borders and auto-height
             from docx.oxml import OxmlElement
             from docx.oxml.ns import nsdecls
             from docx.oxml import parse_xml
@@ -295,34 +394,51 @@ def _add_enhanced_table_to_docx(doc, table_elem):
             </w:tcBorders>
             '''
             
-            # Apply borders
+            # Apply borders and auto-height
             tc = cell_obj._tc
             tcPr = tc.get_or_add_tcPr()
             borders = parse_xml(border_xml)
             tcPr.append(borders)
             
+            # Enable auto-height for cells and text wrapping
+            tcPr.set(qn('w:vAlign'), 'top')  # Align content to top of cell
+            tcPr.set(qn('w:noWrap'), '0')  # Enable text wrapping (0 = false, 1 = true)
+            
             col_idx += colspan
 
-def _extract_cell_text(cell):
-    """Extract text from table cell, handling lists and line breaks"""
-    text_parts = []
+def _extract_cell_text(cell, is_first_column=False):
+    """Extract text from table cell, handling lists and line breaks properly"""
+    # Get clean text content
+    text = cell.get_text().strip()
     
-    for elem in cell.descendants:
-        if elem.name == 'li':
-            text_parts.append(f"• {elem.get_text().strip()}")
-        elif elem.name == 'br':
-            text_parts.append('\n')
-        elif elem.name in ['ul', 'ol']:
-            continue  # Skip container elements
-        elif elem.string and elem.string.strip():
-            text_parts.append(elem.string.strip())
+    # Handle HTML entities and special characters
+    text = text.replace('&nbsp;', ' ')
+    text = text.replace('&amp;', '&')
+    text = text.replace('&lt;', '<')
+    text = text.replace('&gt;', '>')
+    text = text.replace('&quot;', '"')
     
-    if not text_parts:
-        return cell.get_text().strip()
+    # Clean up multiple spaces
+    import re
+    text = re.sub(r'\s+', ' ', text)
     
-    # Join with appropriate separators
-    result = ' | '.join(text_parts) if '•' in ' '.join(text_parts) else ' '.join(text_parts)
-    return result.replace('\n', ' ').strip()
+    # Handle line breaks - convert to proper line breaks for Word
+    text = text.replace('\n', '\n')
+    
+    # Apply intelligent hyphenation for Word documents
+    # Use soft hyphens (Unicode \u00AD) for Word compatibility
+    if not is_first_column:
+        # Only apply hyphenation to non-first columns
+        text = add_hyphenation(text, min_word_length=12)
+    
+    # FORCE line breaks for first column (bold text) to prevent overflow
+    if is_first_column:
+        # For first column, just add soft hyphens to existing hyphens - NO additional processing
+        if '-' in text:
+            # Only add soft hyphens after existing hyphens, nothing else
+            text = text.replace('-', '-\u00AD')
+    
+    return text.strip()
 
 def _save_docx_to_tempfile(doc):
     """Save DOCX document to temporary file and return path"""
@@ -471,68 +587,88 @@ def html_to_pdf(html_content):
             para = Paragraph(elem.get_text(), normal_style)
             story.append(para)
         elif elem.name == 'table':
-            table_data = _convert_html_table_to_reportlab(elem)
-            if table_data:
-                # Calculate column widths - intelligent auto-sizing based on content
-                num_cols = len(table_data[0]) if table_data else 4
-                # Table width = 7.0 inches
-                content_width = 7.0 * inch
-                
-                # Auto-detect optimal column widths based on content
-                if num_cols == 4:
-                    # 4 columns: First 3 narrow (labels), last wide (content)
-                    col_widths = [1.0*inch, 1.0*inch, 1.0*inch, 4.0*inch]
-                elif num_cols == 3:
-                    # 3 columns: First 2 narrow, last wide
-                    col_widths = [1.0*inch, 1.0*inch, 5.0*inch]
-                elif num_cols == 2:
-                    # 2 columns: First narrow (label), second wide (content)
-                    col_widths = [1.5*inch, 5.5*inch]
-                else:
-                    # Equal distribution for other cases
-                    col_widths = [content_width / num_cols] * num_cols
-                
-                # Left align the table
-                table = Table(table_data, repeatRows=1, colWidths=col_widths, hAlign='LEFT')  # Repeat header on new pages
-                
-                # Professional table styling - ultra refined and natural
-                table_style = [
-                    # Header row styling - ultra thin and elegant
-                    ('BACKGROUND', (0, 0), (-1, 0), colors.HexColor('#2E86AB')),  # Professional blue
-                    ('TEXTCOLOR', (0, 0), (-1, 0), colors.white),
-                    ('FONTNAME', (0, 0), (-1, 0), 'Helvetica-Bold'),
-                    ('FONTSIZE', (0, 0), (-1, 0), 8),   # Ultra small header font
-                    ('ALIGN', (0, 0), (-1, 0), 'CENTER'),
-                    ('VALIGN', (0, 0), (-1, 0), 'MIDDLE'),
-                    ('TOPPADDING', (0, 0), (-1, 0), 3),   # Ultra thin header
-                    ('BOTTOMPADDING', (0, 0), (-1, 0), 3), # Ultra thin header
-                    ('LEFTPADDING', (0, 0), (-1, 0), 5),
-                    ('RIGHTPADDING', (0, 0), (-1, 0), 5),
+            try:
+                table_data = _convert_html_table_to_reportlab(elem)
+                if table_data:
+                    # Calculate column widths - intelligent auto-sizing based on content
+                    # Count actual cells in the first row (handle both strings and Paragraph objects)
+                    if table_data and len(table_data) > 0:
+                        first_row = table_data[0]
+                        num_cols = len(first_row)
+                    else:
+                        num_cols = 4
+                    # Table width = 7.0 inches
+                    content_width = 7.0 * inch
                     
-                    # Data rows styling - ultra small text, natural spacing
-                    ('FONTNAME', (0, 1), (-1, -1), 'Helvetica'),
-                    ('FONTSIZE', (0, 1), (-1, -1), 8),   # Ultra small text size
-                    ('ALIGN', (0, 1), (-1, -1), 'LEFT'),
-                    ('VALIGN', (0, 1), (-1, -1), 'TOP'),
-                    ('TOPPADDING', (0, 1), (-1, -1), 3),  # Ultra natural spacing
-                    ('BOTTOMPADDING', (0, 1), (-1, -1), 3), # Ultra natural spacing
-                    ('LEFTPADDING', (0, 1), (-1, -1), 5),
-                    ('RIGHTPADDING', (0, 1), (-1, -1), 5),
+                    # Auto-detect optimal column widths based on content
+                    if num_cols == 5:
+                        # 5 columns: "Lösung, Beschreibung, Umsetzbarkeit, Angebot, Priorität"
+                        # First column wider for bold text wrapping
+                        col_widths = [1.4*inch, 2.3*inch, 1.8*inch, 1.0*inch, 0.5*inch]
+                    elif num_cols == 4:
+                        # 4 columns: First 3 narrow (labels), last wide (content)
+                        col_widths = [1.0*inch, 1.0*inch, 1.0*inch, 4.0*inch]
+                    elif num_cols == 3:
+                        # 3 columns: First 2 narrow, last wide
+                        col_widths = [1.0*inch, 1.0*inch, 5.0*inch]
+                    elif num_cols == 2:
+                        # 2 columns: First narrow (label), second wide (content)
+                        col_widths = [1.5*inch, 5.5*inch]
+                    else:
+                        # Equal distribution for other cases
+                        col_widths = [content_width / num_cols] * num_cols
                     
-                    # Light blue background for all data cells (like HTML #f8fafd)
-                    ('BACKGROUND', (0, 1), (-1, -1), colors.HexColor('#F8FAFD')),
+                    # Left align the table
+                    # Create table with automatic row height adjustment
+                    table = Table(table_data, repeatRows=1, colWidths=col_widths, hAlign='LEFT')
                     
-                    # Black borders like HTML example
-                    ('GRID', (0, 0), (-1, -1), 1, colors.black),
-                    ('LINEBELOW', (0, 0), (-1, 0), 2, colors.HexColor('#2E86AB')),
+                    # Enable automatic row height calculation
+                    # Don't set _argH to None as it causes errors - let ReportLab handle it automatically
                     
-                    # First column styling - bold text
+                    # Professional table styling with intelligent text wrapping
+                    table_style = [
+                        # Header row styling - ultra thin and elegant
+                        ('BACKGROUND', (0, 0), (-1, 0), colors.HexColor('#2E86AB')),  # Professional blue
+                        ('TEXTCOLOR', (0, 0), (-1, 0), colors.white),
+                        ('FONTNAME', (0, 0), (-1, 0), 'Helvetica-Bold'),
+                        ('FONTSIZE', (0, 0), (-1, 0), 9),   # Slightly larger for readability
+                        ('ALIGN', (0, 0), (-1, 0), 'CENTER'),
+                        ('VALIGN', (0, 0), (-1, 0), 'MIDDLE'),
+                        ('TOPPADDING', (0, 0), (-1, 0), 8),   # Increased padding for better spacing
+                        ('BOTTOMPADDING', (0, 0), (-1, 0), 8), # Increased padding for better spacing
+                        ('LEFTPADDING', (0, 0), (-1, 0), 8),
+                        ('RIGHTPADDING', (0, 0), (-1, 0), 8),
+                        
+                        # Data rows styling - better text wrapping and spacing
+                        ('FONTNAME', (0, 1), (-1, -1), 'Helvetica'),
+                        ('FONTSIZE', (0, 1), (-1, -1), 9),   # Larger text for better readability
+                        ('ALIGN', (0, 1), (-1, -1), 'LEFT'),
+                        ('VALIGN', (0, 1), (-1, -1), 'TOP'),
+                        ('TOPPADDING', (0, 1), (-1, -1), 8),  # Increased padding for wrapped text
+                        ('BOTTOMPADDING', (0, 1), (-1, -1), 8), # Increased padding for wrapped text
+                        ('LEFTPADDING', (0, 1), (-1, -1), 8),
+                        ('RIGHTPADDING', (0, 1), (-1, -1), 8),
+                        
+                        # Light blue background for all data cells (like HTML #f8fafd)
+                        ('BACKGROUND', (0, 1), (-1, -1), colors.HexColor('#F8FAFD')),
+                        
+                        # Black borders like HTML example
+                        ('GRID', (0, 0), (-1, -1), 1, colors.black),
+                        ('LINEBELOW', (0, 0), (-1, 0), 2, colors.HexColor('#2E86AB')),
+                        
+                    # First column styling - bold text with better wrapping
                     ('FONTNAME', (0, 1), (0, -1), 'Helvetica-Bold'),
-                ]
-                
-                table.setStyle(TableStyle(table_style))
-                story.append(table)
-                story.append(Spacer(1, 0.3*inch))
+                    ('FONTSIZE', (0, 1), (0, -1), 8),  # Slightly smaller font for better wrapping
+                    ('TOPPADDING', (0, 1), (0, -1), 10),  # More padding for bold text
+                    ('BOTTOMPADDING', (0, 1), (0, -1), 10),  # More padding for bold text
+                    ]
+                    
+                    table.setStyle(TableStyle(table_style))
+                    story.append(table)
+                    story.append(Spacer(1, 0.3*inch))
+            except Exception as e:
+                print(f"Table processing error: {e}")
+                # Continue with other elements if table processing fails
     
     # Build PDF with custom canvas
     doc.build(story, canvasmaker=NumberedCanvas)
@@ -540,21 +676,51 @@ def html_to_pdf(html_content):
     return tmp.name
 
 def _convert_html_table_to_reportlab(table_elem):
-    """Convert HTML table to ReportLab table data format"""
-    rows = table_elem.find_all('tr')
-    if not rows:
+    """Convert HTML table to ReportLab table data format with intelligent text wrapping"""
+    try:
+        rows = table_elem.find_all('tr')
+        if not rows:
+            return []
+        
+        table_data = []
+        for row in rows:
+            cells = row.find_all(['td', 'th'])
+            row_data = []
+            for col_idx, cell in enumerate(cells):
+                # Pass is_first_column flag for better text wrapping
+                cell_text = _extract_cell_text(cell, is_first_column=(col_idx == 0))
+                # Create Paragraph objects for better text wrapping
+                if len(cell_text) > 30 or col_idx == 0:  # Always wrap first column (bold text)
+                    # Use ReportLab Paragraph for intelligent wrapping
+                    from reportlab.lib.styles import getSampleStyleSheet
+                    styles = getSampleStyleSheet()
+                    normal_style = styles['Normal']
+                    normal_style.fontSize = 9
+                    normal_style.fontName = 'Helvetica'
+                    normal_style.leading = 11  # Line spacing
+                    normal_style.alignment = 0  # Left align
+                    normal_style.wordWrap = 'LTR'  # Enable word wrapping
+                    normal_style.splitLongWords = 1  # Allow splitting long words
+                    
+                    # FORCE wrapping for first column (bold text)
+                    if col_idx == 0:
+                        normal_style.splitLongWords = 1  # Force word splitting
+                        normal_style.wordWrap = 'LTR'  # Force left-to-right wrapping
+                    
+                    # Apply intelligent hyphenation using PyHyphen
+                    hyphenated_text = add_hyphenation(cell_text, min_word_length=10)
+                    
+                    # Create paragraph with proper wrapping and hyphenation
+                    para = Paragraph(hyphenated_text, normal_style)
+                    row_data.append(para)
+                else:
+                    row_data.append(cell_text)
+            table_data.append(row_data)
+        
+        return table_data
+    except Exception as e:
+        print(f"Error in _convert_html_table_to_reportlab: {e}")
         return []
-    
-    table_data = []
-    for row in rows:
-        cells = row.find_all(['td', 'th'])
-        row_data = []
-        for cell in cells:
-            cell_text = _extract_cell_text(cell)
-            row_data.append(cell_text)
-        table_data.append(row_data)
-    
-    return table_data
 
 @app.route('/', methods=['GET'])
 def welcome_page():
