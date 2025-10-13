@@ -556,6 +556,238 @@ def _convert_html_table_to_reportlab(table_elem):
     
     return table_data
 
+@app.route('/', methods=['GET'])
+def welcome_page():
+    """Welcome page for the HTML to DOCX/PDF Converter API"""
+    html_content = """
+    <!DOCTYPE html>
+    <html lang="de">
+    <head>
+        <meta charset="UTF-8">
+        <meta name="viewport" content="width=device-width, initial-scale=1.0">
+        <title>Apex PDF/Word FaaS - HTML to DOCX/PDF Converter</title>
+        <style>
+            * {
+                margin: 0;
+                padding: 0;
+                box-sizing: border-box;
+            }
+            
+            body {
+                font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+                background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+                min-height: 100vh;
+                display: flex;
+                align-items: center;
+                justify-content: center;
+                padding: 20px;
+            }
+            
+            .container {
+                background: white;
+                border-radius: 20px;
+                box-shadow: 0 20px 40px rgba(0,0,0,0.1);
+                padding: 40px;
+                max-width: 800px;
+                width: 100%;
+            }
+            
+            .header {
+                text-align: center;
+                margin-bottom: 40px;
+            }
+            
+            .logo {
+                font-size: 2.5em;
+                font-weight: bold;
+                background: linear-gradient(45deg, #667eea, #764ba2);
+                -webkit-background-clip: text;
+                -webkit-text-fill-color: transparent;
+                background-clip: text;
+                margin-bottom: 10px;
+            }
+            
+            .subtitle {
+                color: #666;
+                font-size: 1.2em;
+                margin-bottom: 20px;
+            }
+            
+            .description {
+                color: #555;
+                line-height: 1.6;
+                margin-bottom: 30px;
+                text-align: center;
+            }
+            
+            .api-section {
+                background: #f8f9fa;
+                border-radius: 15px;
+                padding: 30px;
+                margin-bottom: 30px;
+            }
+            
+            .api-title {
+                color: #333;
+                font-size: 1.5em;
+                margin-bottom: 20px;
+                display: flex;
+                align-items: center;
+            }
+            
+            .api-icon {
+                background: #667eea;
+                color: white;
+                width: 40px;
+                height: 40px;
+                border-radius: 50%;
+                display: flex;
+                align-items: center;
+                justify-content: center;
+                margin-right: 15px;
+                font-weight: bold;
+            }
+            
+            .endpoint {
+                background: #2d3748;
+                color: #e2e8f0;
+                padding: 15px;
+                border-radius: 10px;
+                font-family: 'Courier New', monospace;
+                margin: 15px 0;
+                border-left: 4px solid #667eea;
+            }
+            
+            .method {
+                color: #48bb78;
+                font-weight: bold;
+            }
+            
+            .security-badge {
+                background: #fed7d7;
+                color: #c53030;
+                padding: 8px 16px;
+                border-radius: 20px;
+                font-size: 0.9em;
+                font-weight: bold;
+                display: inline-block;
+                margin: 10px 0;
+            }
+            
+            .features {
+                display: grid;
+                grid-template-columns: repeat(auto-fit, minmax(250px, 1fr));
+                gap: 20px;
+                margin: 30px 0;
+            }
+            
+            .feature {
+                background: white;
+                padding: 20px;
+                border-radius: 15px;
+                box-shadow: 0 5px 15px rgba(0,0,0,0.08);
+                text-align: center;
+            }
+            
+            .feature-icon {
+                font-size: 2em;
+                margin-bottom: 15px;
+            }
+            
+            .feature-title {
+                font-weight: bold;
+                color: #333;
+                margin-bottom: 10px;
+            }
+            
+            .feature-desc {
+                color: #666;
+                font-size: 0.9em;
+            }
+            
+            .footer {
+                text-align: center;
+                color: #888;
+                margin-top: 30px;
+                padding-top: 20px;
+                border-top: 1px solid #eee;
+            }
+        </style>
+    </head>
+    <body>
+        <div class="container">
+            <div class="header">
+                <div class="logo">Apex PDF/Word FaaS</div>
+                <div class="subtitle">HTML to DOCX/PDF Converter</div>
+                <div class="description">
+                    Professioneller Service zur Konvertierung von HTML-Inhalten in DOCX- und PDF-Dokumente mit benutzerdefinierten Headern und Fußzeilen.
+                </div>
+            </div>
+            
+            <div class="api-section">
+                <div class="api-title">
+                    <div class="api-icon">API</div>
+                    API Endpoint
+                </div>
+                
+                <div class="endpoint">
+                    <span class="method">POST</span> /convert
+                </div>
+                
+                <div class="security-badge">🔒 API Key geschützt</div>
+                
+                <p><strong>Verwendung:</strong></p>
+                <ul style="margin: 15px 0; padding-left: 20px; color: #555;">
+                    <li>Senden Sie HTML-Inhalt als JSON oder Raw Data</li>
+                    <li>Spezifizieren Sie das gewünschte Format (docx/pdf)</li>
+                    <li>Authentifizierung über Bearer Token erforderlich</li>
+                </ul>
+                
+                <p><strong>Beispiel Request:</strong></p>
+                <div class="endpoint">
+                    {<br>
+                    &nbsp;&nbsp;"html": "&lt;h1&gt;Mein Dokument&lt;/h1&gt;&lt;p&gt;Inhalt...&lt;/p&gt;",<br>
+                    &nbsp;&nbsp;"format": "docx"<br>
+                    }
+                </div>
+            </div>
+            
+            <div class="features">
+                <div class="feature">
+                    <div class="feature-icon">📄</div>
+                    <div class="feature-title">DOCX Export</div>
+                    <div class="feature-desc">Professionelle Word-Dokumente mit Tabellen, Formatierung und Styling</div>
+                </div>
+                
+                <div class="feature">
+                    <div class="feature-icon">📋</div>
+                    <div class="feature-title">PDF Export</div>
+                    <div class="feature-desc">Hochwertige PDF-Dokumente mit benutzerdefinierten Headern und Fußzeilen</div>
+                </div>
+                
+                <div class="feature">
+                    <div class="feature-icon">🎨</div>
+                    <div class="feature-title">Custom Styling</div>
+                    <div class="feature-desc">Automatische Header/Footer-Integration und professionelle Tabellenformatierung</div>
+                </div>
+                
+                <div class="feature">
+                    <div class="feature-icon">🔐</div>
+                    <div class="feature-title">Sicher</div>
+                    <div class="feature-desc">API Key-basierte Authentifizierung für sichere Nutzung</div>
+                </div>
+            </div>
+            
+            <div class="footer">
+                <p>Powered by <strong>ApexAI</strong> | Elevate Solutions GmbH</p>
+                <p>Ihr Vorsprung durch KI.</p>
+            </div>
+        </div>
+    </body>
+    </html>
+    """
+    return html_content
+
 @app.route('/convert', methods=['POST'])
 @require_api_key
 def convert():
@@ -599,4 +831,4 @@ def convert():
         return jsonify({'error': str(e)}), 500
 
 if __name__ == '__main__':
-    app.run(host='0.0.0.0', port=5000, debug=True)
+    app.run(host='0.0.0.0', port=5000, debug=False)
