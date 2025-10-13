@@ -1,44 +1,49 @@
-import os
-from flask import Flask, request, send_file, jsonify
+from flask import Flask, request, jsonify, send_file
 from docx import Document
-from bs4 import BeautifulSoup
-import tempfile
-import traceback
 from docx.shared import Inches, Pt, RGBColor
 from docx.enum.text import WD_ALIGN_PARAGRAPH
-from docx.oxml.ns import qn
-from reportlab.lib.pagesizes import A4
-from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, Table, TableStyle, PageBreak, Frame, PageTemplate
+from docx.oxml.shared import qn
+from bs4 import BeautifulSoup
+import tempfile
+import os
+from reportlab.lib.pagesizes import A4, letter
+from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, Table, TableStyle, PageBreak
 from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
 from reportlab.lib.units import inch
 from reportlab.lib import colors
 from reportlab.lib.enums import TA_CENTER, TA_LEFT
 from reportlab.pdfgen import canvas
-from reportlab.platypus.doctemplate import BaseDocTemplate
-import base64
+from reportlab.lib.pagesizes import A4
+import tempfile
 
 app = Flask(__name__)
 
-API_KEY = os.environ.get('API_KEY')
+# API Key for authentication
+API_KEY = os.getenv('API_KEY', 'de6e0b65-8bd6-43db-844b-b49e0f76d412')
 
-def require_api_key():
-    # Temporär deaktiviert für Tests - entferne diese Zeile für Produktion
-    if not API_KEY:
-        return True
-    
-    auth = request.headers.get('Authorization', '')
-    if not auth.startswith('Bearer '):
-        return False
-    token = auth.split(' ', 1)[1]
-    return token == API_KEY
+def require_api_key(f):
+    def decorated_function(*args, **kwargs):
+        if not API_KEY:
+            return f(*args, **kwargs)
+        
+        auth_header = request.headers.get('Authorization')
+        if not auth_header or not auth_header.startswith('Bearer '):
+            return jsonify({'error': 'Missing or invalid authorization header'}), 401
+        
+        token = auth_header.split(' ')[1]
+        if token != API_KEY:
+            return jsonify({'error': 'Invalid API key'}), 401
+        
+        return f(*args, **kwargs)
+    decorated_function.__name__ = f.__name__
+    return decorated_function
 
-# Example: Standardize the DOCX structure
-# You can expand this function to match your protocol's needs
 def html_to_standardized_docx(html_content):
+    """Convert HTML to standardized DOCX with Header.png and Footer.png"""
     soup = BeautifulSoup(html_content, 'html.parser')
     doc = Document()
 
-    # Set page margins - keep content margins but allow full-width header/footer
+    # Set page margins - zero for header/footer, normal for content
     section = doc.sections[0]
     section.top_margin = Inches(0)  # Header will be in header area
     section.bottom_margin = Inches(0)  # Footer will be in footer area
@@ -86,6 +91,8 @@ def html_to_standardized_docx(html_content):
         print(f"Footer image error: {e}")
 
     body = soup.body
+    if not body:
+        body = soup
 
     for elem in body.children:
         if elem.name is None:
@@ -127,6 +134,78 @@ def _add_enhanced_table_to_docx(doc, table_elem):
     table_docx = doc.add_table(rows=len(rows), cols=max_cols)
     table_docx.style = 'Table Grid'
     
+    # Set table to full width with variable column widths (like HTML example)
+    table_docx.autofit = False
+    table_docx.allow_autofit = False
+    
+    # Remove table alignment and margins to make it flush with text
+    from docx.oxml import OxmlElement
+    from docx.oxml.ns import qn
+    tbl = table_docx._element
+    tblPr = tbl.tblPr
+    if tblPr is None:
+        tblPr = OxmlElement('w:tblPr')
+        tbl.insert(0, tblPr)
+    
+    # Left align table - no indent, let it respect document margins
+    # Table will align with text at 0.5" from page edge
+    
+    # Set table to fixed width (7.0" = 10080 twips)
+    tblW = OxmlElement('w:tblW')
+    tblW.set(qn('w:w'), '10080')  # 7.0 inches = 10080 twips
+    tblW.set(qn('w:type'), 'dxa')  # Fixed width, not percentage
+    tblPr.append(tblW)
+    
+    # Set table cell margins for proper padding (like text)
+    tblCellMar = OxmlElement('w:tblCellMar')
+    # Left and right margins for padding inside cells
+    left_mar = OxmlElement('w:left')
+    left_mar.set(qn('w:w'), '100')  # ~0.07" padding
+    left_mar.set(qn('w:type'), 'dxa')
+    tblCellMar.append(left_mar)
+    
+    right_mar = OxmlElement('w:right')
+    right_mar.set(qn('w:w'), '100')  # ~0.07" padding
+    right_mar.set(qn('w:type'), 'dxa')
+    tblCellMar.append(right_mar)
+    
+    # Top and bottom minimal
+    top_mar = OxmlElement('w:top')
+    top_mar.set(qn('w:w'), '30')
+    top_mar.set(qn('w:type'), 'dxa')
+    tblCellMar.append(top_mar)
+    
+    bottom_mar = OxmlElement('w:bottom')
+    bottom_mar.set(qn('w:w'), '30')
+    bottom_mar.set(qn('w:type'), 'dxa')
+    tblCellMar.append(bottom_mar)
+    
+    tblPr.append(tblCellMar)
+    
+    # Calculate column widths - intelligent auto-sizing based on content
+    # Table width = 7.0 inches
+    content_width = 7.0
+    
+    # Auto-detect optimal column widths based on content
+    if max_cols == 4:
+        # 4 columns: First 3 narrow (labels), last wide (content)
+        col_widths = [1.0, 1.0, 1.0, 4.0]
+    elif max_cols == 3:
+        # 3 columns: First 2 narrow, last wide
+        col_widths = [1.0, 1.0, 5.0]
+    elif max_cols == 2:
+        # 2 columns: First narrow (label), second wide (content)
+        col_widths = [1.5, 5.5]
+    else:
+        # Equal distribution for other cases
+        col_widths = [content_width / max_cols] * max_cols
+    
+    # Set column widths
+    for i, width in enumerate(col_widths):
+        if i < max_cols:
+            for row in table_docx.rows:
+                row.cells[i].width = Inches(width)
+    
     # Track used cells for rowspan
     used_cells = set()
     
@@ -140,7 +219,7 @@ def _add_enhanced_table_to_docx(doc, table_elem):
                 col_idx += 1
             
             cell_obj = table_docx.cell(i, col_idx)
-            cell_obj.text = cell.get_text()
+            cell_obj.text = _extract_cell_text(cell)
             
             # Handle colspan
             colspan = int(cell.get('colspan', 1))
@@ -161,57 +240,58 @@ def _add_enhanced_table_to_docx(doc, table_elem):
                         cell_obj.merge(table_docx.cell(i + merge_row, col_idx))
             
             # Enhanced cell styling
-            is_header = cell.name == 'th'
-            is_first_col = col_idx == 0
+            # ONLY first row is header (not first column)
+            is_header_row = (i == 0)
+            is_first_col = (col_idx == 0)
             
             # Set cell background color
-            if is_header:
-                # Header cells - professional blue
-                from docx.oxml.shared import OxmlElement, qn
+            from docx.oxml.shared import OxmlElement, qn
+            if is_header_row:
+                # Header row - professional blue background
                 shading_elm = OxmlElement('w:shd')
                 shading_elm.set(qn('w:val'), 'clear')
                 shading_elm.set(qn('w:color'), 'auto')
                 shading_elm.set(qn('w:fill'), '2E86AB')  # Professional blue
                 cell_obj._tc.get_or_add_tcPr().append(shading_elm)
-            elif is_first_col:
-                # First column - light gray background
+            else:
+                # Data cells - light blue background
                 shading_elm = OxmlElement('w:shd')
                 shading_elm.set(qn('w:val'), 'clear')
                 shading_elm.set(qn('w:color'), 'auto')
-                shading_elm.set(qn('w:fill'), 'E9ECEF')  # Light gray
+                shading_elm.set(qn('w:fill'), 'F8FAFD')  # Light blue
                 cell_obj._tc.get_or_add_tcPr().append(shading_elm)
             
-            # Enhanced text styling
+            # Enhanced text styling - ultra refined
             for paragraph in cell_obj.paragraphs:
                 for run in paragraph.runs:
                     run.font.name = 'Arial'
-                    run.font.size = Pt(12 if is_header else 11)
-                    run.font.bold = is_header or is_first_col
+                    run.font.size = Pt(8)  # Ultra small, natural size for all
+                    run.font.bold = is_header_row or is_first_col
                     run._element.rPr.rFonts.set(qn('w:eastAsia'), 'Arial')
                     
-                    # Header text color
-                    if is_header:
-                        run.font.color.rgb = RGBColor(255, 255, 255)  # White text for headers
+                    # Header text color (white on blue)
+                    if is_header_row:
+                        run.font.color.rgb = RGBColor(255, 255, 255)  # White text for header row
                 
-                # Paragraph alignment and spacing
-                paragraph.paragraph_format.alignment = WD_ALIGN_PARAGRAPH.CENTER if is_header else WD_ALIGN_PARAGRAPH.LEFT
-                paragraph.paragraph_format.space_before = Pt(6)
-                paragraph.paragraph_format.space_after = Pt(6)
-                paragraph.paragraph_format.left_indent = Inches(0.1)
-                paragraph.paragraph_format.right_indent = Inches(0.1)
+                # Paragraph alignment and spacing - ultra natural, NO indents for flush alignment
+                paragraph.paragraph_format.alignment = WD_ALIGN_PARAGRAPH.CENTER if is_header_row else WD_ALIGN_PARAGRAPH.LEFT
+                paragraph.paragraph_format.space_before = Pt(2)  # Ultra thin spacing
+                paragraph.paragraph_format.space_after = Pt(2)   # Ultra thin spacing
+                paragraph.paragraph_format.left_indent = Inches(0)  # NO indent - flush with table edge
+                paragraph.paragraph_format.right_indent = Inches(0) # NO indent - flush with table edge
             
-            # Set cell borders
+            # Set cell borders - black borders like HTML example
             from docx.oxml import OxmlElement
             from docx.oxml.ns import nsdecls
             from docx.oxml import parse_xml
             
-            # Define border style
+            # Define border style - black borders like HTML
             border_xml = '''
             <w:tcBorders xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">
-                <w:top w:val="single" w:sz="4" w:space="0" w:color="DEE2E6"/>
-                <w:left w:val="single" w:sz="4" w:space="0" w:color="DEE2E6"/>
-                <w:bottom w:val="single" w:sz="4" w:space="0" w:color="DEE2E6"/>
-                <w:right w:val="single" w:sz="4" w:space="0" w:color="DEE2E6"/>
+                <w:top w:val="single" w:sz="4" w:space="0" w:color="000000"/>
+                <w:left w:val="single" w:sz="4" w:space="0" w:color="000000"/>
+                <w:bottom w:val="single" w:sz="4" w:space="0" w:color="000000"/>
+                <w:right w:val="single" w:sz="4" w:space="0" w:color="000000"/>
             </w:tcBorders>
             '''
             
@@ -222,6 +302,34 @@ def _add_enhanced_table_to_docx(doc, table_elem):
             tcPr.append(borders)
             
             col_idx += colspan
+
+def _extract_cell_text(cell):
+    """Extract text from table cell, handling lists and line breaks"""
+    text_parts = []
+    
+    for elem in cell.descendants:
+        if elem.name == 'li':
+            text_parts.append(f"• {elem.get_text().strip()}")
+        elif elem.name == 'br':
+            text_parts.append('\n')
+        elif elem.name in ['ul', 'ol']:
+            continue  # Skip container elements
+        elif elem.string and elem.string.strip():
+            text_parts.append(elem.string.strip())
+    
+    if not text_parts:
+        return cell.get_text().strip()
+    
+    # Join with appropriate separators
+    result = ' | '.join(text_parts) if '•' in ' '.join(text_parts) else ' '.join(text_parts)
+    return result.replace('\n', ' ').strip()
+
+def _save_docx_to_tempfile(doc):
+    """Save DOCX document to temporary file and return path"""
+    tmp = tempfile.NamedTemporaryFile(delete=False, suffix='.docx')
+    doc.save(tmp.name)
+    tmp.close()
+    return tmp.name
 
 class NumberedCanvas(canvas.Canvas):
     """Custom canvas with header and footer"""
@@ -307,58 +415,57 @@ def html_to_pdf(html_content):
         img_width, img_height = pil_img.size
         aspect_ratio = img_height / img_width
         footer_height = A4[0] * aspect_ratio
-    except:
-        pass
+    except Exception as e:
+        print(f"Image processing error: {e}")
+        header_height = 0.5 * inch
+        footer_height = 0.5 * inch
     
-    # Create document with content area between header and footer
-    doc = SimpleDocTemplate(tmp.name, pagesize=A4, 
-                          topMargin=header_height + 0.2*inch, 
-                          bottomMargin=footer_height + 0.2*inch,
-                          leftMargin=0.5*inch, 
+    # Create document with margins for header/footer
+    doc = SimpleDocTemplate(tmp.name, 
+                          pagesize=A4,
+                          topMargin=header_height + 0.5*inch,
+                          bottomMargin=footer_height + 0.5*inch,
+                          leftMargin=0.5*inch,
                           rightMargin=0.5*inch)
     
     # Define styles
     styles = getSampleStyleSheet()
-    
-    # Custom styles
     title_style = ParagraphStyle(
         'CustomTitle',
         parent=styles['Heading1'],
-        fontName='Helvetica-Bold',
         fontSize=18,
         spaceAfter=12,
-        alignment=TA_LEFT
+        fontName='Helvetica-Bold'
     )
     
     heading_style = ParagraphStyle(
         'CustomHeading',
         parent=styles['Heading2'],
-        fontName='Helvetica-Bold',
         fontSize=14,
         spaceAfter=8,
-        alignment=TA_LEFT
+        fontName='Helvetica-Bold'
     )
     
     normal_style = ParagraphStyle(
         'CustomNormal',
         parent=styles['Normal'],
-        fontName='Helvetica',
         fontSize=11,
         spaceAfter=6,
-        alignment=TA_LEFT
+        fontName='Helvetica'
     )
     
     # Build content
     story = []
     
-    # Process HTML elements
     for elem in body.children:
         if elem.name is None:
-            continue  # Skip text nodes or whitespace
-        
-        if elem.name in ['h1', 'h2', 'h3']:
-            level = {'h1': title_style, 'h2': heading_style, 'h3': heading_style}[elem.name]
-            para = Paragraph(elem.get_text(), level)
+            continue
+        if elem.name in ['h1']:
+            para = Paragraph(elem.get_text(), title_style)
+            story.append(para)
+        elif elem.name in ['h2', 'h3']:
+            level = {'h2': 1, 'h3': 2}[elem.name]
+            para = Paragraph(elem.get_text(), heading_style)
             story.append(para)
         elif elem.name == 'p':
             para = Paragraph(elem.get_text(), normal_style)
@@ -366,42 +473,61 @@ def html_to_pdf(html_content):
         elif elem.name == 'table':
             table_data = _convert_html_table_to_reportlab(elem)
             if table_data:
-                table = Table(table_data, repeatRows=1)  # Repeat header on new pages
+                # Calculate column widths - intelligent auto-sizing based on content
+                num_cols = len(table_data[0]) if table_data else 4
+                # Table width = 7.0 inches
+                content_width = 7.0 * inch
                 
-                # Professional table styling
+                # Auto-detect optimal column widths based on content
+                if num_cols == 4:
+                    # 4 columns: First 3 narrow (labels), last wide (content)
+                    col_widths = [1.0*inch, 1.0*inch, 1.0*inch, 4.0*inch]
+                elif num_cols == 3:
+                    # 3 columns: First 2 narrow, last wide
+                    col_widths = [1.0*inch, 1.0*inch, 5.0*inch]
+                elif num_cols == 2:
+                    # 2 columns: First narrow (label), second wide (content)
+                    col_widths = [1.5*inch, 5.5*inch]
+                else:
+                    # Equal distribution for other cases
+                    col_widths = [content_width / num_cols] * num_cols
+                
+                # Left align the table
+                table = Table(table_data, repeatRows=1, colWidths=col_widths, hAlign='LEFT')  # Repeat header on new pages
+                
+                # Professional table styling - ultra refined and natural
                 table_style = [
-                    # Header row styling
+                    # Header row styling - ultra thin and elegant
                     ('BACKGROUND', (0, 0), (-1, 0), colors.HexColor('#2E86AB')),  # Professional blue
                     ('TEXTCOLOR', (0, 0), (-1, 0), colors.white),
                     ('FONTNAME', (0, 0), (-1, 0), 'Helvetica-Bold'),
-                    ('FONTSIZE', (0, 0), (-1, 0), 12),
+                    ('FONTSIZE', (0, 0), (-1, 0), 8),   # Ultra small header font
                     ('ALIGN', (0, 0), (-1, 0), 'CENTER'),
                     ('VALIGN', (0, 0), (-1, 0), 'MIDDLE'),
-                    ('TOPPADDING', (0, 0), (-1, 0), 12),
-                    ('BOTTOMPADDING', (0, 0), (-1, 0), 12),
-                    ('LEFTPADDING', (0, 0), (-1, 0), 15),
-                    ('RIGHTPADDING', (0, 0), (-1, 0), 15),
+                    ('TOPPADDING', (0, 0), (-1, 0), 3),   # Ultra thin header
+                    ('BOTTOMPADDING', (0, 0), (-1, 0), 3), # Ultra thin header
+                    ('LEFTPADDING', (0, 0), (-1, 0), 5),
+                    ('RIGHTPADDING', (0, 0), (-1, 0), 5),
                     
-                    # Data rows styling
+                    # Data rows styling - ultra small text, natural spacing
                     ('FONTNAME', (0, 1), (-1, -1), 'Helvetica'),
-                    ('FONTSIZE', (0, 1), (-1, -1), 11),
+                    ('FONTSIZE', (0, 1), (-1, -1), 8),   # Ultra small text size
                     ('ALIGN', (0, 1), (-1, -1), 'LEFT'),
                     ('VALIGN', (0, 1), (-1, -1), 'TOP'),
-                    ('TOPPADDING', (0, 1), (-1, -1), 10),
-                    ('BOTTOMPADDING', (0, 1), (-1, -1), 10),
-                    ('LEFTPADDING', (0, 1), (-1, -1), 15),
-                    ('RIGHTPADDING', (0, 1), (-1, -1), 15),
+                    ('TOPPADDING', (0, 1), (-1, -1), 3),  # Ultra natural spacing
+                    ('BOTTOMPADDING', (0, 1), (-1, -1), 3), # Ultra natural spacing
+                    ('LEFTPADDING', (0, 1), (-1, -1), 5),
+                    ('RIGHTPADDING', (0, 1), (-1, -1), 5),
                     
-                    # Alternating row colors
-                    ('ROWBACKGROUNDS', (0, 1), (-1, -1), [colors.white, colors.HexColor('#F8F9FA')]),
+                    # Light blue background for all data cells (like HTML #f8fafd)
+                    ('BACKGROUND', (0, 1), (-1, -1), colors.HexColor('#F8FAFD')),
                     
-                    # Borders
-                    ('GRID', (0, 0), (-1, -1), 1, colors.HexColor('#DEE2E6')),
+                    # Black borders like HTML example
+                    ('GRID', (0, 0), (-1, -1), 1, colors.black),
                     ('LINEBELOW', (0, 0), (-1, 0), 2, colors.HexColor('#2E86AB')),
                     
-                    # First column styling (labels)
+                    # First column styling - bold text
                     ('FONTNAME', (0, 1), (0, -1), 'Helvetica-Bold'),
-                    ('BACKGROUND', (0, 1), (0, -1), colors.HexColor('#E9ECEF')),
                 ]
                 
                 table.setStyle(TableStyle(table_style))
@@ -414,90 +540,37 @@ def html_to_pdf(html_content):
     return tmp.name
 
 def _convert_html_table_to_reportlab(table_elem):
-    """Convert HTML table to ReportLab table format with enhanced parsing"""
+    """Convert HTML table to ReportLab table data format"""
     rows = table_elem.find_all('tr')
     if not rows:
-        return None
+        return []
     
     table_data = []
     for row in rows:
         cells = row.find_all(['td', 'th'])
         row_data = []
         for cell in cells:
-            # Handle colspan by adding empty cells
-            colspan = int(cell.get('colspan', 1))
-            
-            # Enhanced text extraction - handle lists and formatting
             cell_text = _extract_cell_text(cell)
             row_data.append(cell_text)
-            
-            # Add empty cells for colspan
-            for _ in range(colspan - 1):
-                row_data.append('')
         table_data.append(row_data)
     
     return table_data
 
-def _extract_cell_text(cell):
-    """Extract and format cell text, handling lists and special formatting"""
-    # Handle lists
-    lists = cell.find_all(['ul', 'ol'])
-    if lists:
-        list_texts = []
-        for ul in lists:
-            items = ul.find_all('li')
-            if items:
-                item_texts = [item.get_text().strip() for item in items]
-                list_texts.append(' • '.join(item_texts))
-        return ' | '.join(list_texts)
-    
-    # Handle line breaks
-    br_tags = cell.find_all('br')
-    if br_tags:
-        # Replace <br> with line breaks
-        text = str(cell)
-        for br in br_tags:
-            text = text.replace(str(br), '\n')
-        soup = BeautifulSoup(text, 'html.parser')
-        return soup.get_text().strip()
-    
-    # Regular text extraction
-    return cell.get_text().strip()
-
-def _save_docx_to_tempfile(doc):
-    tmp = tempfile.NamedTemporaryFile(delete=False, suffix='.docx')
-    doc.save(tmp.name)
-    tmp.close()
-    print('DOCX created at', tmp.name)
-    return tmp.name
-
-@app.before_request
-def log_request_info():
-    print(f"Received {request.method} request for {request.url}")
-    print(f"Headers: {dict(request.headers)}")
-    print(f"Body: {request.get_data(as_text=True)[:1000]}")  # Print up to 1000 chars
-
 @app.route('/convert', methods=['POST'])
+@require_api_key
 def convert():
+    """Convert HTML to DOCX or PDF based on request format"""
     try:
-        if not require_api_key():
-            print('Unauthorized request')
-            return jsonify({'error': 'Unauthorized'}), 401
-        
-        # Try to parse JSON body first
-        try:
-            json_data = request.get_json()
-            if json_data:
-                html_content = json_data.get('html', '')
-                format_type = json_data.get('format', 'docx').lower()
-            else:
-                # Fallback to raw data for backward compatibility
-                if not request.data:
-                    print('No HTML provided in request')
-                    return jsonify({'error': 'No HTML provided'}), 400
-                html_content = request.data.decode('utf-8')
-                format_type = 'docx'
-        except:
+        # Try to get JSON data first
+        json_data = request.get_json()
+        if json_data:
+            html_content = json_data.get('html', '')
+            format_type = json_data.get('format', 'docx').lower()
+            
+            if not html_content:
+                print('No HTML provided in request')
+                return jsonify({'error': 'No HTML provided'}), 400
+        else:
             # Fallback to raw data for backward compatibility
             if not request.data:
                 print('No HTML provided in request')
@@ -512,27 +585,18 @@ def convert():
         # Convert based on format
         if format_type in ['pdf']:
             output_path = html_to_pdf(html_content)
-            download_name = 'protocol.pdf'
+            download_name = 'document.pdf'
             mimetype = 'application/pdf'
-        elif format_type in ['word', 'docx']:
+        else:  # Default to DOCX for 'docx', 'word', or any other format
             output_path = html_to_standardized_docx(html_content)
-            download_name = 'protocol.docx'
+            download_name = 'document.docx'
             mimetype = 'application/vnd.openxmlformats-officedocument.wordprocessingml.document'
-        else:
-            print(f'Unsupported format: {format_type}')
-            return jsonify({'error': f'Unsupported format: {format_type}. Use "pdf" or "word"/"docx"'}), 400
         
-        response = send_file(output_path, as_attachment=True, download_name=download_name, mimetype=mimetype)
+        return send_file(output_path, as_attachment=True, download_name=download_name, mimetype=mimetype)
         
-        @response.call_on_close
-        def cleanup():
-            os.remove(output_path)
-        
-        return response
     except Exception as e:
-        print('Exception occurred:')
-        print(traceback.format_exc())
-        return jsonify({'error': 'Internal server error', 'details': str(e), 'trace': traceback.format_exc()}), 500
+        print(f"Conversion error: {e}")
+        return jsonify({'error': str(e)}), 500
 
 if __name__ == '__main__':
-    app.run(debug=True, host='0.0.0.0')
+    app.run(host='0.0.0.0', port=5000, debug=True)
