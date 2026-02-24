@@ -10,6 +10,22 @@ from docx.oxml.ns import qn
 
 app = Flask(__name__)
 
+def _add_inline_content(para, element):
+    """Add inline content to a paragraph, preserving bold/italic formatting."""
+    for child in element.children:
+        if child.name is None:  # Text node
+            text = str(child)
+            if text.strip():
+                para.add_run(text)
+        elif child.name in ['strong', 'b']:
+            run = para.add_run(child.get_text())
+            run.bold = True
+        elif child.name in ['em', 'i']:
+            run = para.add_run(child.get_text())
+            run.italic = True
+        else:
+            para.add_run(child.get_text())
+
 API_KEY = os.environ.get('API_KEY')
 
 def require_api_key():
@@ -60,6 +76,15 @@ def html_to_standardized_docx(html_content):
                 run.font.name = 'Arial'
                 run.font.size = Pt(11)
                 run._element.rPr.rFonts.set(qn('w:eastAsia'), 'Arial')
+        elif elem.name in ['ul', 'ol']:
+            for li in elem.find_all('li', recursive=False):
+                style = 'List Bullet' if elem.name == 'ul' else 'List Number'
+                para = doc.add_paragraph(style=style)
+                _add_inline_content(para, li)
+                for run in para.runs:
+                    run.font.name = 'Arial'
+                    run.font.size = Pt(11)
+                    run._element.rPr.rFonts.set(qn('w:eastAsia'), 'Arial')
         elif elem.name == 'table':
             rows = elem.find_all('tr')
             if not rows:
