@@ -25,6 +25,13 @@ def html_to_standardized_docx(html_content):
     soup = BeautifulSoup(html_content, 'html.parser')
     doc = Document()
 
+    # Set default body text style to Arial 11
+    style = doc.styles['Normal']
+    font = style.font
+    font.name = 'Arial'
+    font.size = Pt(11)
+    style.element.rPr.rFonts.set(qn('w:eastAsia'), 'Arial')
+
     # Add logo to header
     logo_path = 'logo_kontiki.png'
     section = doc.sections[0]
